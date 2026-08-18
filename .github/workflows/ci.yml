@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: avatar
+          POSTGRES_PASSWORD: avatar
+          POSTGRES_DB: avatar_studio
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U avatar -d avatar_studio"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+psycopg://avatar:avatar@localhost:5432/avatar_studio
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        working-directory: apps/api
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint (ruff)
+        working-directory: apps/api
+        run: ruff check .
+
+      - name: Type check (mypy)
+        working-directory: apps/api
+        run: mypy app
+
+      - name: Run migrations
+        working-directory: apps/api
+        run: alembic upgrade head
+
+      - name: Run tests
+        working-directory: apps/api
+        run: pytest -v
