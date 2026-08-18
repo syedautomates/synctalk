@@ -42,7 +42,8 @@ services:
       - .env
     environment:
       DATABASE_URL: postgresql+psycopg://avatar:avatar@postgres:5432/avatar_studio
-      S3_ENDPOINT: http://minio:9000
+      S3_ENDPOINT: http://minio:9000          # internal: how the api container reaches MinIO
+      S3_PUBLIC_ENDPOINT: http://localhost:9000  # external: how the browser/host reaches MinIO for presigned URLs
     ports:
       - "8000:8000"
     depends_on:

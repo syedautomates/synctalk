@@ -9,6 +9,7 @@ Manual QA checklist and running gate-review log, per the delivery plan's operati
 | Milestone | Acceptance criteria (from `claude.md` §7) | Result | Notes |
 |---|---|---|---|
 | M0 Scaffold | `docker compose up` → `curl /healthz` = 200; CI green | **Pass** | Verified 2026-08-19: `docker compose up -d --build` → all 3 containers healthy → Alembic migration 0001 applied cleanly inside the api container → `curl localhost:8000/healthz` → `200 {"status":"ok"}`. CI green on `syedautomates/synctalk` main (ruff, mypy, migration-against-real-postgres, pytest all pass). One lint-fix cycle needed (E501 line-length) before CI went green — see `DECISIONS.md`. |
+| M1 Profiles/uploads/validation | Upload golden fixtures → profile checklist all green; upload a deliberately blurry photo → clear rejection message | **Partial** | Verified 2026-08-19 via real `docker compose` stack (not mocked): login → create profile → presigned upload → direct PUT to MinIO → asset validation, using a synthetic 200×200 blank/faceless photo. All three expected rejections fired with clear, human-readable messages (low resolution, blur, no face) — the "bad photo" half of the acceptance criteria is confirmed. The "golden fixtures → all-green" half is **not yet run** — needs the Director's real photo/video/voice files uploaded through this same flow. |
 
 ---
 
