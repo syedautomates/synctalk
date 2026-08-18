@@ -8,7 +8,7 @@ Manual QA checklist and running gate-review log, per the delivery plan's operati
 
 | Milestone | Acceptance criteria (from `claude.md` §7) | Result | Notes |
 |---|---|---|---|
-| M0 Scaffold | `docker compose up` → `curl /healthz` = 200; CI green | **Pending** | Blocked on Docker Desktop + Python install on Director's machine. Code is written; not yet run. |
+| M0 Scaffold | `docker compose up` → `curl /healthz` = 200; CI green | **Pass** | Verified 2026-08-19: `docker compose up -d --build` → all 3 containers healthy → Alembic migration 0001 applied cleanly inside the api container → `curl localhost:8000/healthz` → `200 {"status":"ok"}`. CI green on `syedautomates/synctalk` main (ruff, mypy, migration-against-real-postgres, pytest all pass). One lint-fix cycle needed (E501 line-length) before CI went green — see `DECISIONS.md`. |
 
 ---
 
