@@ -24,7 +24,9 @@ class AvatarProfile(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
     name: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="draft")
     consent_confirmed_at: Mapped[datetime | None] = mapped_column(nullable=True)
@@ -42,7 +44,8 @@ class MediaAsset(Base):
     profile_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("avatar_profiles.id"), nullable=False
     )
-    kind: Mapped[str] = mapped_column(Text, nullable=False)  # photo | reference_video | voice_sample | extracted_frame
+    # photo | reference_video | voice_sample | extracted_frame
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
     s3_key: Mapped[str] = mapped_column(Text, nullable=False)
     meta: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     validation: Mapped[str] = mapped_column(Text, nullable=False, server_default="pending")
@@ -63,7 +66,9 @@ class Look(Base):
     garment_asset_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("media_assets.id"), nullable=True
     )
-    candidate_keys: Mapped[list] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
+    candidate_keys: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
     approved_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="queued")
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
@@ -78,7 +83,9 @@ class VideoRequest(Base):
     profile_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("avatar_profiles.id"), nullable=False
     )
-    look_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("looks.id"), nullable=False)
+    look_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("looks.id"), nullable=False
+    )
     emotion_brief: Mapped[str] = mapped_column(Text, nullable=False)
     script: Mapped[str] = mapped_column(Text, nullable=False)
     orchestrator_output: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -87,7 +94,9 @@ class VideoRequest(Base):
     video_4k_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="queued")
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    cost_ledger: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    cost_ledger: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
@@ -97,7 +106,8 @@ class Job(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
-    type: Mapped[str] = mapped_column(Text, nullable=False)  # look_generation | video_generation | upscale
+    # look_generation | video_generation | upscale
+    type: Mapped[str] = mapped_column(Text, nullable=False)
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="queued")
     lease_expires_at: Mapped[datetime | None] = mapped_column(nullable=True)
