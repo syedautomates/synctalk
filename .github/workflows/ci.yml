@@ -75,10 +75,10 @@ jobs:
         working-directory: apps/web
         run: npm run lint
 
-      - name: Type check (tsc)
-        working-directory: apps/web
-        run: npx tsc --noEmit
-
-      - name: Build
+      # Type check + build in one step: `next build` generates ambient types
+      # (e.g. LayoutProps) into .next/types/ as part of its own TypeScript pass,
+      # so a standalone `tsc --noEmit` on a fresh checkout fails before those
+      # types exist. `next build`'s "Running TypeScript ..." step is the real gate.
+      - name: Type check + build
         working-directory: apps/web
         run: npm run build
