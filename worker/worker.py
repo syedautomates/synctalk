@@ -2,13 +2,12 @@
 back. Runs on the GPU pod — has no direct DB/S3 access, only the WORKER_TOKEN and HTTPS,
 per the architecture's "worker authenticates with a worker token" design (see claude.md
 §1's Design decisions)."""
+import importlib
 import os
 import time
 import traceback
 
 import requests
-
-from handlers import look_generation
 
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
 WORKER_TOKEN = os.environ["WORKER_TOKEN"]
@@ -18,13 +17,20 @@ POLL_INTERVAL_S = float(os.environ.get("WORKER_POLL_INTERVAL_S", "5"))
 # raising, since requests has no default. Found live: a mid-request tunnel blip left the
 # worker stuck on mark_running() indefinitely with no error, no retry, no progress.
 REQUEST_TIMEOUT_S = 30
-UPLOAD_TIMEOUT_S = 120
+# Video/4K outputs are much larger than M3's candidate images — generous timeout.
+UPLOAD_TIMEOUT_S = 300
 
-# M3 scope: only look_generation exists. M5 adds video_generation and upscale here.
-JOB_TYPES = ["look_generation"]
+JOB_TYPES = ["look_generation", "video_generation", "upscale"]
 
-HANDLERS = {
-    "look_generation": look_generation.run,
+# Module names, not imported objects — imported lazily per job, on demand. Found live:
+# look_generation.py needs torch/diffusers in-process, but video_generation.py/upscale.py
+# deliberately DON'T (they subprocess out to LiveAvatar/SeedVR2's own isolated venvs, per
+# the module docstrings). Importing all three eagerly at startup would force every worker
+# pod to install Qwen's torch/diffusers even if it only ever runs video_generation/upscale.
+HANDLER_MODULES = {
+    "look_generation": "handlers.look_generation",
+    "video_generation": "handlers.video_generation",
+    "upscale": "handlers.upscale",
 }
 
 _session = requests.Session()
@@ -131,14 +137,15 @@ def run_forever() -> None:
 
         job_id = job["id"]
         job_type = job["type"]
-        handler = HANDLERS.get(job_type)
+        module_name = HANDLER_MODULES.get(job_type)
         print(f"Leased job {job_id} ({job_type})", flush=True)
 
-        if handler is None:
+        if module_name is None:
             fail_job(job_id, f"No handler registered for job type '{job_type}'")
             continue
 
         try:
+            handler = importlib.import_module(module_name).run
             mark_running(job_id)
             ctx = JobContext(job_id)
             result = handler(job, ctx)
