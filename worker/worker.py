@@ -3,11 +3,28 @@ back. Runs on the GPU pod — has no direct DB/S3 access, only the WORKER_TOKEN 
 per the architecture's "worker authenticates with a worker token" design (see claude.md
 §1's Design decisions)."""
 import importlib
+import json
 import os
+import sys
 import time
 import traceback
+from datetime import datetime, timezone
 
 import requests
+
+
+def log(event: str, **fields: object) -> None:
+    """One JSON line per event, matching the control plane's structured logging
+    (app/logging_config.py) so worker output greps/parses the same way. The worker has
+    no request_id (it's not an HTTP server) -- job_id is the correlating field here."""
+    payload = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "level": "INFO",
+        "logger": "worker",
+        "message": event,
+        **fields,
+    }
+    print(json.dumps(payload, default=str), file=sys.stdout, flush=True)
 
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
 WORKER_TOKEN = os.environ["WORKER_TOKEN"]
@@ -122,12 +139,12 @@ class JobContext:
 
 
 def run_forever() -> None:
-    print(f"Worker starting — API_BASE_URL={API_BASE_URL}, types={JOB_TYPES}", flush=True)
+    log("worker starting", api_base_url=API_BASE_URL, job_types=JOB_TYPES)
     while True:
         try:
             job = lease_next_job()
         except requests.RequestException as exc:
-            print(f"Poll failed: {exc}", flush=True)
+            log("poll failed", error=str(exc))
             time.sleep(POLL_INTERVAL_S)
             continue
 
@@ -138,7 +155,7 @@ def run_forever() -> None:
         job_id = job["id"]
         job_type = job["type"]
         module_name = HANDLER_MODULES.get(job_type)
-        print(f"Leased job {job_id} ({job_type})", flush=True)
+        log("job leased", job_id=job_id, job_type=job_type)
 
         if module_name is None:
             fail_job(job_id, f"No handler registered for job type '{job_type}'")
@@ -150,14 +167,18 @@ def run_forever() -> None:
             ctx = JobContext(job_id)
             result = handler(job, ctx)
             complete_job(job_id, result)
-            print(f"Job {job_id} complete", flush=True)
+            log("job completed", job_id=job_id, job_type=job_type)
         except Exception:
             error = traceback.format_exc()[-4000:]  # last ~50 lines, bounded
-            print(f"Job {job_id} failed:\n{error}", flush=True)
+            log("job failed", job_id=job_id, job_type=job_type, error=error)
             try:
                 fail_job(job_id, error)
             except requests.RequestException as exc:
-                print(f"Also failed to report failure back to control plane: {exc}", flush=True)
+                log(
+                    "also failed to report failure back to control plane",
+                    job_id=job_id,
+                    error=str(exc),
+                )
 
 
 if __name__ == "__main__":

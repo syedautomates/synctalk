@@ -38,6 +38,45 @@ def ensure_bucket_exists() -> None:
         _internal_client.create_bucket(Bucket=settings.s3_bucket)
 
 
+# claude.md M7: "S3 lifecycle rule deletes raw uploads' temp copies after 7 days". This
+# app doesn't stage uploads into a separate temp key before promoting them (presigned
+# uploads land directly at their permanent key, per M1), and passed raw assets
+# (reference photos/video/voice) are referenced indefinitely by later generation steps
+# -- a blanket age-based expiry on all raw uploads would delete assets still in active
+# use. The genuinely disposable case is a raw upload that FAILED validation: it will
+# never be read again (see create_asset in routes/profiles.py). Those get tagged
+# FAILED_VALIDATION_TAG at validation time, and this rule expires anything carrying
+# that tag after 7 days -- a real, tag-filtered S3/MinIO Lifecycle rule, not an
+# app-level cron. See DECISIONS.md's M7 entry for the full reasoning.
+FAILED_VALIDATION_TAG = {"Key": "lifecycle", "Value": "expire-failed-validation"}
+FAILED_VALIDATION_EXPIRY_DAYS = 7
+_LIFECYCLE_RULE_ID = "expire-failed-validation-uploads"
+
+
+def ensure_lifecycle_policy() -> None:
+    _internal_client.put_bucket_lifecycle_configuration(
+        Bucket=settings.s3_bucket,
+        LifecycleConfiguration={
+            "Rules": [
+                {
+                    "ID": _LIFECYCLE_RULE_ID,
+                    "Status": "Enabled",
+                    "Filter": {"Tag": FAILED_VALIDATION_TAG},
+                    "Expiration": {"Days": FAILED_VALIDATION_EXPIRY_DAYS},
+                }
+            ]
+        },
+    )
+
+
+def tag_for_expiry(s3_key: str) -> None:
+    _internal_client.put_object_tagging(
+        Bucket=settings.s3_bucket,
+        Key=s3_key,
+        Tagging={"TagSet": [FAILED_VALIDATION_TAG]},
+    )
+
+
 def build_object_key(profile_id: uuid.UUID, kind: str, filename: str) -> str:
     safe_name = filename.replace("/", "_").replace("\\", "_")
     return f"profiles/{profile_id}/{kind}/{uuid.uuid4()}_{safe_name}"

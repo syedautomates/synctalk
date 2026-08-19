@@ -100,6 +100,19 @@ class VideoRequest(Base):
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
+class IdempotencyKey(Base):
+    __tablename__ = "idempotency_keys"
+
+    # Scoped to (key, endpoint) rather than key alone -- the same client-generated key
+    # string is only meaningful within one logical action; scoping by endpoint means a
+    # collision across unrelated actions can't cross-contaminate cached responses.
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    endpoint: Mapped[str] = mapped_column(Text, primary_key=True)
+    status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    response_body: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
 class Job(Base):
     __tablename__ = "jobs"
 

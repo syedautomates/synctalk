@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Header, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.auth import CurrentUser, DbSession
@@ -14,9 +14,23 @@ from app.schemas.upload import (
     PresignResponse,
 )
 from app.schemas.voice import CreateVoiceRequest
-from app.services import elevenlabs_client, media_validation
+from app.services import elevenlabs_client, idempotency, media_validation
 from app.services.frame_extraction import extract_and_store_frames
-from app.services.storage import build_object_key, get_object_bytes, object_exists, presign_put
+from app.services.storage import (
+    build_object_key,
+    get_object_bytes,
+    object_exists,
+    presign_put,
+    tag_for_expiry,
+)
+
+# Idempotency is applied here, not to every POST in this file: a duplicate voice-clone
+# request would create a second real ElevenLabs IVC (real external cost, and clobbers
+# elevenlabs_voice_id with whichever clone finishes last) -- the other routes in this
+# file (create/get profile, presign, consent, create_asset) have no external cost, so a
+# duplicate submission is just wasted DB rows, not wasted money. See DECISIONS.md's M7
+# entry.
+VOICE_IDEMPOTENCY_ENDPOINT = "POST /profiles/{id}/voice"
 
 router = APIRouter(prefix="/api/v1/profiles", tags=["profiles"])
 
@@ -159,6 +173,12 @@ def create_asset(
     db.commit()
     db.refresh(asset)
 
+    if not result.passed:
+        # A failed-validation raw upload is never read again -- tag it so the bucket's
+        # lifecycle rule cleans it up after 7 days instead of keeping it forever. See
+        # DECISIONS.md's M7 entry.
+        tag_for_expiry(payload.s3_key)
+
     # On a passing reference video, extract frames and pick the primary reference photo.
     if payload.kind == "reference_video" and result.passed:
         extracted_assets, best_key = extract_and_store_frames(data, profile_id)
@@ -186,57 +206,92 @@ def _latest_passed_asset(db: Session, profile_id: UUID, kind: str) -> MediaAsset
 
 @router.post("/{profile_id}/voice", response_model=ProfileOut)
 def create_voice(
-    profile_id: UUID, payload: CreateVoiceRequest, user: CurrentUser, db: DbSession
+    profile_id: UUID,
+    payload: CreateVoiceRequest,
+    user: CurrentUser,
+    db: DbSession,
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
 ) -> ProfileOut:
-    profile = _get_owned_profile(profile_id, user, db)
-
-    if profile.consent_confirmed_at is None:
+    cached = idempotency.get_cached(db, idempotency_key, VOICE_IDEMPOTENCY_ENDPOINT)
+    if cached is not None:
+        return ProfileOut.model_validate(cached.body)
+    if idempotency_key is not None and not idempotency.claim(
+        db, idempotency_key, VOICE_IDEMPOTENCY_ENDPOINT
+    ):
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Consent must be confirmed before creating a voice clone.",
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A request with this Idempotency-Key is already in progress.",
         )
 
-    if payload.use_reference_video:
-        video_asset = _latest_passed_asset(db, profile_id, "reference_video")
-        if video_asset is None:
+    try:
+        profile = _get_owned_profile(profile_id, user, db)
+
+        if profile.consent_confirmed_at is None:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No passing reference video found to extract audio from.",
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Consent must be confirmed before creating a voice clone.",
             )
-        audio_bytes = elevenlabs_client.extract_audio_from_video(
-            get_object_bytes(video_asset.s3_key)
-        )
-        filename = "reference_video_audio.mp3"
-    else:
-        if payload.source_asset_id is not None:
-            voice_asset = db.get(MediaAsset, payload.source_asset_id)
-            if (
-                voice_asset is None
-                or voice_asset.profile_id != profile_id
-                or voice_asset.kind != "voice_sample"
-                or voice_asset.validation != "passed"
-            ):
+
+        if payload.use_reference_video:
+            video_asset = _latest_passed_asset(db, profile_id, "reference_video")
+            if video_asset is None:
                 raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="No passing voice_sample asset found with that ID on this profile.",
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="No passing reference video found to extract audio from.",
                 )
-        else:
-            voice_asset = _latest_passed_asset(db, profile_id, "voice_sample")
-        if voice_asset is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    "No passing voice sample found. Upload one, "
-                    "or retry with use_reference_video=true."
-                ),
+            audio_bytes = elevenlabs_client.extract_audio_from_video(
+                get_object_bytes(video_asset.s3_key)
             )
-        audio_bytes = get_object_bytes(voice_asset.s3_key)
-        filename = voice_asset.s3_key.rsplit("/", 1)[-1]
+            filename = "reference_video_audio.mp3"
+        else:
+            if payload.source_asset_id is not None:
+                voice_asset = db.get(MediaAsset, payload.source_asset_id)
+                if (
+                    voice_asset is None
+                    or voice_asset.profile_id != profile_id
+                    or voice_asset.kind != "voice_sample"
+                    or voice_asset.validation != "passed"
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=(
+                            "No passing voice_sample asset found with that ID "
+                            "on this profile."
+                        ),
+                    )
+            else:
+                voice_asset = _latest_passed_asset(db, profile_id, "voice_sample")
+            if voice_asset is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        "No passing voice sample found. Upload one, "
+                        "or retry with use_reference_video=true."
+                    ),
+                )
+            audio_bytes = get_object_bytes(voice_asset.s3_key)
+            filename = voice_asset.s3_key.rsplit("/", 1)[-1]
 
-    voice_id = elevenlabs_client.create_instant_voice_clone(
-        name=f"{profile.name} ({profile.id})", audio_bytes=audio_bytes, filename=filename
-    )
-    profile.elevenlabs_voice_id = voice_id
-    db.commit()
-    db.refresh(profile)
-    return _to_profile_out(profile, db)
+        voice_id = elevenlabs_client.create_instant_voice_clone(
+            name=f"{profile.name} ({profile.id})", audio_bytes=audio_bytes, filename=filename
+        )
+        profile.elevenlabs_voice_id = voice_id
+        db.commit()
+        db.refresh(profile)
+        result = _to_profile_out(profile, db)
+    except Exception:
+        # Release the claim so a genuine retry isn't permanently blocked by a request
+        # that failed validation or hit a transient ElevenLabs error.
+        if idempotency_key is not None:
+            idempotency.release(db, idempotency_key, VOICE_IDEMPOTENCY_ENDPOINT)
+        raise
+
+    if idempotency_key is not None:
+        idempotency.store_result(
+            db,
+            idempotency_key,
+            VOICE_IDEMPOTENCY_ENDPOINT,
+            status.HTTP_200_OK,
+            result.model_dump(mode="json"),
+        )
+    return result

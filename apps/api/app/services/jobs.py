@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
@@ -5,6 +6,8 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.db.models import Job
+
+logger = logging.getLogger(__name__)
 
 LEASE_MINUTES = 15
 MAX_ATTEMPTS = 2
@@ -15,6 +18,7 @@ def enqueue(db: Session, job_type: str, payload: dict) -> Job:
     db.add(job)
     db.commit()
     db.refresh(job)
+    logger.info("job enqueued", extra={"job_id": str(job.id), "job_type": job_type})
     return job
 
 
@@ -48,12 +52,20 @@ def lease_next(db: Session, types: list[str]) -> Job | None:
             job.error = "Exceeded max attempts (lease expired without completing)."
             job.lease_expires_at = None
             db.commit()
+            logger.warning(
+                "job exceeded max attempts, marking failed",
+                extra={"job_id": str(job.id), "job_type": job.type, "attempts": job.attempts},
+            )
             continue  # this one's dead, look for the next eligible job
 
         job.status = "leased"
         job.lease_expires_at = now + timedelta(minutes=LEASE_MINUTES)
         db.commit()
         db.refresh(job)
+        logger.info(
+            "job leased",
+            extra={"job_id": str(job.id), "job_type": job.type, "attempts": job.attempts},
+        )
         return job
 
 
@@ -83,6 +95,7 @@ def complete(db: Session, job: Job, result: dict) -> Job:
     job.lease_expires_at = None
     db.commit()
     db.refresh(job)
+    logger.info("job completed", extra={"job_id": str(job.id), "job_type": job.type})
     return job
 
 
@@ -96,6 +109,16 @@ def fail(db: Session, job: Job, error: str) -> Job:
         job.lease_expires_at = None
     db.commit()
     db.refresh(job)
+    logger.warning(
+        "job failed",
+        extra={
+            "job_id": str(job.id),
+            "job_type": job.type,
+            "attempts": job.attempts,
+            "will_retry": job.status == "queued",
+            "error": error[:500],
+        },
+    )
     return job
 
 
