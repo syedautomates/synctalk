@@ -1,0 +1,20 @@
+# Qwen-Image-Edit-2511's QwenImageEditPlusPipeline requires diffusers installed from git —
+# verified against the live HF model card at M3 build time (2026-08-19); the PyPI release
+# doesn't yet have this pipeline class. Re-check the model card before bumping this.
+#
+# torch/torchvision are pinned to a CUDA 12.4 build via --extra-index-url, NOT plain
+# `pip install torch`. Found live on the M3 pod: the pod's NVIDIA driver (550.127.05) only
+# supports up to CUDA 12.9, but a bare `torch` install grabs the latest release's default
+# wheel, which had moved to a CUDA 13 build — `torch.cuda.is_available()` silently returns
+# False instead of raising, so the failure only shows up as "no CUDA device" downstream.
+# cu124 is forward-compatible with any driver supporting CUDA 12.x. Re-verify this pairing
+# (https://github.com/pytorch/vision#installation) if bumping either version.
+--extra-index-url https://download.pytorch.org/whl/cu124
+torch==2.6.0
+torchvision==0.21.0
+
+git+https://github.com/huggingface/diffusers
+transformers
+accelerate
+pillow
+requests

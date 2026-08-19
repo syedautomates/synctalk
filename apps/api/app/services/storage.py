@@ -6,7 +6,10 @@ from botocore.exceptions import ClientError
 
 from app.config import settings
 
-PRESIGN_EXPIRES_SECONDS = 15 * 60
+PRESIGN_PUT_EXPIRES_SECONDS = 15 * 60
+# Longer than the PUT window: a GET presign goes into a job payload that may sit in the
+# queue for a while before a worker picks it up (pod might not be running yet).
+PRESIGN_GET_EXPIRES_SECONDS = 60 * 60
 
 
 def _client(endpoint_url: str):
@@ -40,11 +43,24 @@ def build_object_key(profile_id: uuid.UUID, kind: str, filename: str) -> str:
     return f"profiles/{profile_id}/{kind}/{uuid.uuid4()}_{safe_name}"
 
 
+def build_key(prefix: str, filename: str) -> str:
+    safe_name = filename.replace("/", "_").replace("\\", "_")
+    return f"{prefix}/{uuid.uuid4()}_{safe_name}"
+
+
 def presign_put(s3_key: str, content_type: str) -> str:
     return _public_client.generate_presigned_url(
         "put_object",
         Params={"Bucket": settings.s3_bucket, "Key": s3_key, "ContentType": content_type},
-        ExpiresIn=PRESIGN_EXPIRES_SECONDS,
+        ExpiresIn=PRESIGN_PUT_EXPIRES_SECONDS,
+    )
+
+
+def presign_get(s3_key: str) -> str:
+    return _public_client.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": settings.s3_bucket, "Key": s3_key},
+        ExpiresIn=PRESIGN_GET_EXPIRES_SECONDS,
     )
 
 

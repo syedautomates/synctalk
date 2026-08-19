@@ -112,6 +112,7 @@ class Job(Base):
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="queued")
     lease_expires_at: Mapped[datetime | None] = mapped_column(nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    progress: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))

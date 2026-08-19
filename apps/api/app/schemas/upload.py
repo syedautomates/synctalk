@@ -2,7 +2,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-AssetKind = Literal["photo", "reference_video", "voice_sample", "extracted_frame"]
+AssetKind = Literal["photo", "reference_video", "voice_sample", "extracted_frame", "garment"]
 
 
 class PresignRequest(BaseModel):

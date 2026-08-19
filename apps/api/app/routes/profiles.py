@@ -139,6 +139,8 @@ def create_asset(
         result = media_validation.validate_video(data)
     elif payload.kind == "voice_sample":
         result = media_validation.validate_voice(data)
+    elif payload.kind == "garment":
+        result = media_validation.validate_garment(data)
     else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

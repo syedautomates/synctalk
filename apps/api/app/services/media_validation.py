@@ -11,6 +11,8 @@ MIN_PHOTO_SHORT_SIDE = 768
 PHOTO_SHARPNESS_THRESHOLD = 100.0
 MIN_FACE_HEIGHT_RATIO = 0.25
 
+MIN_GARMENT_SHORT_SIDE = 512
+
 VIDEO_MIN_DURATION_S = 25.0
 VIDEO_MAX_DURATION_S = 75.0
 VIDEO_TARGET_MIN_DURATION_S = 30.0
@@ -131,6 +133,33 @@ def validate_photo(image_bytes: bytes) -> ValidationResult:
             )
 
     return ValidationResult(len(errors) == 0, errors, meta)
+
+
+def validate_garment(image_bytes: bytes) -> ValidationResult:
+    """A garment reference photo (e.g. "wear this shirt") — unlike a profile photo, this
+    isn't expected to contain the user's face at all, so it skips face/sharpness checks
+    and only confirms it's a decodable, reasonably-sized image."""
+    arr = np.frombuffer(image_bytes, dtype=np.uint8)
+    image = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if image is None:
+        return ValidationResult(
+            False, ["Could not read this file as an image. Please upload a JPG or PNG."], {}
+        )
+
+    height, width = image.shape[:2]
+    meta = {"width": width, "height": height}
+
+    if min(width, height) < MIN_GARMENT_SHORT_SIDE:
+        return ValidationResult(
+            False,
+            [
+                f"Image resolution is too low ({width}x{height}). The shorter side must be "
+                f"at least {MIN_GARMENT_SHORT_SIDE}px."
+            ],
+            meta,
+        )
+
+    return ValidationResult(True, [], meta)
 
 
 def ffprobe_info(path: str) -> dict:
