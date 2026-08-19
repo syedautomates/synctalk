@@ -18,8 +18,12 @@ PROMPT_TEMPLATE = (
 )
 
 # Different seeds per candidate, per claude.md M3 ("4 candidates (different seeds)") —
-# not num_images_per_prompt=4, which doesn't guarantee seed diversity.
-SEEDS = [0, 1, 2, 3]
+# not num_images_per_prompt=4, which doesn't guarantee seed diversity. Fixed fallback
+# seeds (only used if the job payload doesn't supply its own — e.g. an old/manual test
+# job): a real reroll must send fresh random seeds via the payload, since fixed seeds
+# against the same reference image + prompt regenerate byte-identical candidates,
+# defeating M3's "reroll re-queues with new seeds" mitigation.
+DEFAULT_SEEDS = [0, 1, 2, 3]
 
 # Both the 2509 and 2511 model cards note "optimal performance ... with 1 to 3 input
 # images" — capped here even though the API can hand us up to 4 (primary + garment + 2
@@ -63,9 +67,10 @@ def run(job: dict, ctx) -> dict:
 
     full_prompt = PROMPT_TEMPLATE.format(user_prompt=user_prompt)
     pipeline = _get_pipeline()
+    seeds = payload.get("seeds") or DEFAULT_SEEDS
 
     candidate_keys = []
-    for i, seed in enumerate(SEEDS):
+    for i, seed in enumerate(seeds):
         generator = torch.manual_seed(seed)
         with torch.inference_mode():
             output = pipeline(
@@ -85,6 +90,6 @@ def run(job: dict, ctx) -> dict:
             output_prefix, f"candidate_{i}.png", buf.getvalue(), "image/png"
         )
         candidate_keys.append(s3_key)
-        ctx.report_progress(int((i + 1) / len(SEEDS) * 100))
+        ctx.report_progress(int((i + 1) / len(seeds) * 100))
 
     return {"candidate_keys": candidate_keys}

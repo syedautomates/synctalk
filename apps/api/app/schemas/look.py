@@ -27,5 +27,9 @@ class LookOut(BaseModel):
     approved_key: str | None
     status: str
     created_at: datetime
+    # Presigned download URLs — candidate_keys/approved_key are raw S3 keys, not
+    # fetchable directly by a browser (bucket isn't public). Populated by the route.
+    candidate_urls: list[str] = []
+    approved_url: str | None = None
 
     model_config = {"from_attributes": True}

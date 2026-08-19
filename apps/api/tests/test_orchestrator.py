@@ -1,3 +1,4 @@
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import anthropic
@@ -5,9 +6,9 @@ import pytest
 from pydantic import ValidationError
 
 from app.schemas.orchestrator import OrchestratorOutput
-from app.services.orchestrator import OrchestratorError, orchestrate
+from app.services.orchestrator import OrchestratorError, OrchestratorResult, orchestrate
 
-VALID_KWARGS = dict(
+VALID_KWARGS: dict[str, Any] = dict(
     tagged_script="[sad] Hello there. This is a test.",
     tts_chunks=["[sad] Hello there. This is a test."],
     style_prompt="subdued expression, talking, speaking directly to camera, slow gestures",
@@ -46,6 +47,14 @@ def test_style_prompt_without_talking_rejected() -> None:
         OrchestratorOutput(**bad)
 
 
+def _mock_response(parsed_output: OrchestratorOutput) -> MagicMock:
+    mock_response = MagicMock()
+    mock_response.parsed_output = parsed_output
+    mock_response.usage.input_tokens = 100
+    mock_response.usage.output_tokens = 50
+    return mock_response
+
+
 def _mock_client_returning(
     parsed_output: OrchestratorOutput | None, *, raise_error: Exception | None = None
 ):
@@ -53,9 +62,8 @@ def _mock_client_returning(
     if raise_error is not None:
         mock_client.messages.parse.side_effect = raise_error
     else:
-        mock_response = MagicMock()
-        mock_response.parsed_output = parsed_output
-        mock_client.messages.parse.return_value = mock_response
+        assert parsed_output is not None
+        mock_client.messages.parse.return_value = _mock_response(parsed_output)
     return mock_client
 
 
@@ -64,22 +72,20 @@ def test_orchestrate_succeeds_on_first_attempt() -> None:
     mock_client = _mock_client_returning(expected)
     with patch("app.services.orchestrator.anthropic.Anthropic", return_value=mock_client):
         result = orchestrate("sad, subdued", "Hello there. This is a test.")
-    assert result == expected
+    assert result == OrchestratorResult(output=expected, input_tokens=100, output_tokens=50)
     assert mock_client.messages.parse.call_count == 1
 
 
 def test_orchestrate_retries_once_then_succeeds() -> None:
     expected = OrchestratorOutput(**VALID_KWARGS)
     mock_client = MagicMock()
-    mock_response = MagicMock()
-    mock_response.parsed_output = expected
     mock_client.messages.parse.side_effect = [
         anthropic.APIError("transient failure", request=MagicMock(), body=None),
-        mock_response,
+        _mock_response(expected),
     ]
     with patch("app.services.orchestrator.anthropic.Anthropic", return_value=mock_client):
         result = orchestrate("sad, subdued", "Hello there. This is a test.")
-    assert result == expected
+    assert result == OrchestratorResult(output=expected, input_tokens=100, output_tokens=50)
     assert mock_client.messages.parse.call_count == 2
 
 

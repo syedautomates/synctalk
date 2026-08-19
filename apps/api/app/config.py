@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     jwt_expire_minutes: int = 60 * 24 * 30  # 30 days; single-user tool, no refresh flow
     founder_email: str = "founder@example.com"
     worker_token: str = "dev-worker-token-change-me"
+    web_origin: str = "http://localhost:3000"  # M6 Next.js wizard's origin, for CORS
 
     # --- external APIs ---
     elevenlabs_api_key: str = ""

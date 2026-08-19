@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 jobs:
-  test:
+  api:
     runs-on: ubuntu-latest
 
     services:
@@ -54,3 +54,31 @@ jobs:
       - name: Run tests
         working-directory: apps/api
         run: pytest -v
+
+  web:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install dependencies
+        working-directory: apps/web
+        run: npm ci
+
+      - name: Lint (eslint)
+        working-directory: apps/web
+        run: npm run lint
+
+      - name: Type check (tsc)
+        working-directory: apps/web
+        run: npx tsc --noEmit
+
+      - name: Build
+        working-directory: apps/web
+        run: npm run build

@@ -1,3 +1,4 @@
+import random
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
@@ -12,6 +13,7 @@ from app.services.storage import presign_get
 router = APIRouter(prefix="/api/v1", tags=["looks"])
 
 EXTRA_REFERENCE_PHOTOS = 2
+CANDIDATE_COUNT = 4
 
 
 def _get_owned_profile(profile_id: UUID, user: User, db: Session) -> AvatarProfile:
@@ -29,6 +31,13 @@ def _get_owned_look(look_id: UUID, user: User, db: Session) -> Look:
     if profile is None or profile.user_id != user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Look not found")
     return look
+
+
+def _to_look_out(look: Look) -> LookOut:
+    out = LookOut.model_validate(look)
+    out.candidate_urls = [presign_get(k) for k in look.candidate_keys]
+    out.approved_url = presign_get(look.approved_key) if look.approved_key else None
+    return out
 
 
 @router.post(
@@ -86,6 +95,11 @@ def create_look(
     db.commit()
     db.refresh(look)
 
+    # Fresh random seeds on every call (including a reroll — the frontend just calls
+    # this endpoint again with the same prompt) so candidates actually vary; claude.md's
+    # M3 reroll mitigation only works if repeat generations aren't byte-identical.
+    seeds = random.sample(range(0, 2**31 - 1), CANDIDATE_COUNT)
+
     job = jobs_service.enqueue(
         db,
         "look_generation",
@@ -97,6 +111,7 @@ def create_look(
             "extra_reference_image_urls": [presign_get(a.s3_key) for a in extra_photos],
             "garment_image_url": garment_url,
             "output_prefix": f"looks/{look.id}",
+            "seeds": seeds,
         },
     )
 
@@ -106,7 +121,7 @@ def create_look(
 @router.get("/looks/{look_id}", response_model=LookOut)
 def get_look(look_id: UUID, user: CurrentUser, db: DbSession) -> LookOut:
     look = _get_owned_look(look_id, user, db)
-    return LookOut.model_validate(look)
+    return _to_look_out(look)
 
 
 @router.post("/looks/{look_id}/approve", response_model=LookOut)
@@ -123,4 +138,4 @@ def approve_look(
     look.status = "approved"
     db.commit()
     db.refresh(look)
-    return LookOut.model_validate(look)
+    return _to_look_out(look)

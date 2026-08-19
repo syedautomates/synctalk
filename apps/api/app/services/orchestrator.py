@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 import anthropic
 from pydantic import ValidationError
 
@@ -6,6 +8,13 @@ from app.schemas.orchestrator import OrchestratorOutput
 
 MAX_ATTEMPTS = 2
 MAX_TOKENS = 8000
+
+
+@dataclass
+class OrchestratorResult:
+    output: OrchestratorOutput
+    input_tokens: int
+    output_tokens: int
 
 # Verbatim from claude.md §8 — do not edit without updating claude.md and logging why
 # in DECISIONS.md.
@@ -48,7 +57,7 @@ def _user_content(emotion_brief: str, script: str) -> str:
     return f"EMOTION_BRIEF: {emotion_brief}\n\nSCRIPT:\n{script}"
 
 
-def orchestrate(emotion_brief: str, script: str) -> OrchestratorOutput:
+def orchestrate(emotion_brief: str, script: str) -> OrchestratorResult:
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
     last_error: Exception | None = None
 
@@ -65,7 +74,11 @@ def orchestrate(emotion_brief: str, script: str) -> OrchestratorOutput:
                 raise ValueError(
                     f"Claude returned no parsed output (stop_reason={response.stop_reason})"
                 )
-            return response.parsed_output
+            return OrchestratorResult(
+                output=response.parsed_output,
+                input_tokens=response.usage.input_tokens,
+                output_tokens=response.usage.output_tokens,
+            )
         except (ValidationError, anthropic.APIError, ValueError) as exc:
             last_error = exc
 

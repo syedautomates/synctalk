@@ -8,7 +8,6 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.auth import DbSession
 from app.config import settings
-from app.db.models import Job, Look
 from app.schemas.job import (
     InternalJobOut,
     InternalPresignRequest,
@@ -17,6 +16,7 @@ from app.schemas.job import (
     JobFailRequest,
     JobPatchRequest,
 )
+from app.services import domain_side_effects
 from app.services import jobs as jobs_service
 from app.services.storage import build_key, presign_put
 
@@ -60,30 +60,11 @@ def patch_job(job_id: UUID, payload: JobPatchRequest, _: WorkerAuth, db: DbSessi
     )
 
 
-def _apply_domain_side_effects(db: DbSession, job: Job, *, failed: bool) -> None:
-    """The jobs table is generic — the worker only ever talks to /internal/jobs/*. When a
-    job finishes, the domain row it was working on (Look, VideoRequest, ...) needs updating
-    too, so the control plane does that here rather than teaching the worker about
-    domain tables."""
-    if job.type == "look_generation":
-        look_id = job.payload.get("look_id")
-        look = db.get(Look, look_id) if look_id else None
-        if look is None:
-            return
-        if failed:
-            look.status = "failed"
-        else:
-            candidate_keys = (job.result or {}).get("candidate_keys", [])
-            look.candidate_keys = candidate_keys
-            look.status = "generated"
-        db.commit()
-
-
 @router.post("/jobs/{job_id}/complete", response_model=InternalJobOut)
 def complete_job(job_id: UUID, payload: JobCompleteRequest, _: WorkerAuth, db: DbSession):
     job = _get_job_or_404(db, job_id)
     job = jobs_service.complete(db, job, payload.result)
-    _apply_domain_side_effects(db, job, failed=False)
+    domain_side_effects.apply(db, job, failed=False)
     return job
 
 
@@ -92,7 +73,7 @@ def fail_job(job_id: UUID, payload: JobFailRequest, _: WorkerAuth, db: DbSession
     job = _get_job_or_404(db, job_id)
     job = jobs_service.fail(db, job, payload.error)
     if job.status == "failed":  # only mark the domain row dead once retries are exhausted
-        _apply_domain_side_effects(db, job, failed=True)
+        domain_side_effects.apply(db, job, failed=True)
     return job
 
 
