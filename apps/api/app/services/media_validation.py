@@ -90,7 +90,21 @@ def validate_photo(image_bytes: bytes) -> ValidationResult:
             f"at least {MIN_PHOTO_SHORT_SIDE}px — try a less zoomed-out shot."
         )
 
-    sharpness = _sharpness(image)
+    faces = _detect_faces(image)
+    meta["face_count"] = len(faces)
+
+    # Score sharpness on the face region when we have exactly one clean face to crop —
+    # scoring the whole frame penalizes zoomed-in shots with a plain/flat background,
+    # since a large low-detail area drags down the frame-wide Laplacian variance even
+    # when the face itself is perfectly in focus.
+    if len(faces) == 1:
+        fx, fy, fw, fh = faces[0]
+        fx, fy = max(fx, 0), max(fy, 0)
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        face_crop = gray[fy : fy + fh, fx : fx + fw]
+        sharpness = float(cv2.Laplacian(face_crop, cv2.CV_64F).var()) if face_crop.size else 0.0
+    else:
+        sharpness = _sharpness(image)
     meta["sharpness_score"] = round(sharpness, 2)
     if sharpness < PHOTO_SHARPNESS_THRESHOLD:
         errors.append(
@@ -98,8 +112,6 @@ def validate_photo(image_bytes: bytes) -> ValidationResult:
             "and hold the camera steady."
         )
 
-    faces = _detect_faces(image)
-    meta["face_count"] = len(faces)
     if len(faces) == 0:
         errors.append(
             "No face detected in this photo. Make sure your face is clearly visible and well-lit."
@@ -121,7 +133,7 @@ def validate_photo(image_bytes: bytes) -> ValidationResult:
     return ValidationResult(len(errors) == 0, errors, meta)
 
 
-def _ffprobe_info(path: str) -> dict:
+def ffprobe_info(path: str) -> dict:
     proc = subprocess.run(
         [
             "ffprobe",
@@ -143,12 +155,47 @@ def _ffprobe_info(path: str) -> dict:
         (s for s in data["streams"] if s.get("codec_type") == "video"), None
     )
     width = height = fps = None
+    rotation = 0
     if video_stream is not None:
         width = int(video_stream["width"])
         height = int(video_stream["height"])
         rate_parts = video_stream.get("r_frame_rate", "0/1").split("/")
         fps = float(rate_parts[0]) / float(rate_parts[1]) if float(rate_parts[1]) else 0.0
-    return {"duration": duration, "width": width, "height": height, "fps": fps}
+        rotation = extract_rotation(video_stream)
+    return {
+        "duration": duration,
+        "width": width,
+        "height": height,
+        "fps": fps,
+        "rotation": rotation,
+    }
+
+
+def extract_rotation(video_stream: dict) -> int:
+    """Phones commonly store landscape sensor frames plus a rotation flag rather than
+    rotating pixels — OpenCV's VideoCapture ignores that flag, so we read it ourselves
+    and rotate each decoded frame back to upright before running any detection on it."""
+    for side_data in video_stream.get("side_data_list", []):
+        if "rotation" in side_data:
+            angle = round(float(side_data["rotation"]) / 90) * 90
+            return angle % 360
+    legacy_tag = video_stream.get("tags", {}).get("rotate")
+    if legacy_tag is not None:
+        return int(legacy_tag) % 360
+    return 0
+
+
+def rotate_frame(frame: np.ndarray, rotation: int) -> np.ndarray:
+    # ffmpeg's rotation side-data is the clockwise angle applied at capture, so we
+    # undo it with the opposite turn (verified empirically against a real 90°-tagged
+    # phone recording — this mapping is not just a naive assumption).
+    if rotation == 90:
+        return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    if rotation in (180, -180):
+        return cv2.rotate(frame, cv2.ROTATE_180)
+    if rotation in (270, -90):
+        return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+    return frame
 
 
 def validate_video(video_bytes: bytes) -> ValidationResult:
@@ -161,7 +208,7 @@ def validate_video(video_bytes: bytes) -> ValidationResult:
 
     try:
         try:
-            info = _ffprobe_info(tmp_path)
+            info = ffprobe_info(tmp_path)
         except (subprocess.CalledProcessError, KeyError, ValueError, json.JSONDecodeError):
             return ValidationResult(
                 False,
@@ -170,7 +217,9 @@ def validate_video(video_bytes: bytes) -> ValidationResult:
             )
 
         duration = info["duration"]
-        width, height, fps = info["width"], info["height"], info["fps"]
+        width, height, fps, rotation = info["width"], info["height"], info["fps"], info["rotation"]
+        if rotation in (90, 270, -90) and width is not None and height is not None:
+            width, height = height, width  # ffprobe reports the raw sensor frame, pre-rotation
         meta.update(
             {"duration_s": round(duration, 1), "width": width, "height": height, "fps": fps}
         )
@@ -220,6 +269,7 @@ def validate_video(video_bytes: bytes) -> ValidationResult:
                 break
             if frame_index % frame_interval == 0:
                 sampled += 1
+                frame = rotate_frame(frame, rotation)
                 faces = _detect_faces(frame)
                 if len(faces) == 1:
                     single_face_count += 1
@@ -263,7 +313,7 @@ def validate_voice(audio_bytes: bytes, suffix: str = ".mp3") -> ValidationResult
 
     try:
         try:
-            info = _ffprobe_info(tmp_path)
+            info = ffprobe_info(tmp_path)
         except (subprocess.CalledProcessError, KeyError, ValueError, json.JSONDecodeError):
             return ValidationResult(
                 False,

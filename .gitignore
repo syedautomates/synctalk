@@ -28,3 +28,10 @@ Thumbs.db
 
 # Claude Code local settings (machine-specific, not shared)
 .claude/settings.local.json
+
+# Golden fixture media (personal photos/video/audio) — kept local only, never in git.
+# GitHub also hard-rejects any file >100MB without Git LFS; the reference video alone is ~190MB.
+# Only the small text fixtures (script, emotion brief) are tracked.
+assets/test/*
+!assets/test/*.txt
+!assets/test/*.md

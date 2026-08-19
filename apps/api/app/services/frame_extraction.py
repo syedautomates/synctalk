@@ -1,4 +1,6 @@
+import json
 import os
+import subprocess
 import tempfile
 import uuid
 from typing import Any
@@ -7,6 +9,7 @@ import cv2
 import mediapipe as mp
 
 from app.db.models import MediaAsset
+from app.services.media_validation import ffprobe_info, rotate_frame
 from app.services.storage import build_object_key, put_object_bytes
 
 TARGET_FRAME_COUNT = 12
@@ -18,9 +21,13 @@ _face_detector = mp.solutions.face_detection.FaceDetection(
 )
 
 
-def _sharpness(image_bgr) -> float:
+def _face_region_sharpness(image_bgr: Any, box) -> float:
+    height, width = image_bgr.shape[:2]
+    x, y = max(int(box.xmin * width), 0), max(int(box.ymin * height), 0)
+    w, h = int(box.width * width), int(box.height * height)
     gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
-    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    crop = gray[y : y + h, x : x + w]
+    return float(cv2.Laplacian(crop, cv2.CV_64F).var()) if crop.size else 0.0
 
 
 def _frontal_symmetry(detection) -> float | None:
@@ -46,6 +53,11 @@ def extract_and_store_frames(
         tmp_path = tmp.name
 
     try:
+        try:
+            rotation = ffprobe_info(tmp_path)["rotation"]
+        except (subprocess.CalledProcessError, KeyError, ValueError, json.JSONDecodeError):
+            rotation = 0
+
         cap = cv2.VideoCapture(tmp_path)
         native_fps = cap.get(cv2.CAP_PROP_FPS) or 24.0
         frame_interval = max(int(round(native_fps * SAMPLE_INTERVAL_S)), 1)
@@ -57,12 +69,16 @@ def extract_and_store_frames(
             if not ret:
                 break
             if frame_index % frame_interval == 0:
+                frame = rotate_frame(frame, rotation)
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 result = _face_detector.process(rgb)
                 if result.detections and len(result.detections) == 1:
-                    symmetry = _frontal_symmetry(result.detections[0])
+                    detection = result.detections[0]
+                    symmetry = _frontal_symmetry(detection)
                     if symmetry is not None and symmetry >= MIN_FRONTAL_SYMMETRY:
-                        candidates.append((_sharpness(frame), symmetry, frame.copy()))
+                        box = detection.location_data.relative_bounding_box
+                        sharpness = _face_region_sharpness(frame, box)
+                        candidates.append((sharpness, symmetry, frame.copy()))
             frame_index += 1
         cap.release()
 
