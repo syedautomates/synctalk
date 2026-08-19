@@ -40,6 +40,7 @@ class ProfileOut(BaseModel):
     name: str
     status: str
     consent_confirmed_at: datetime | None
+    elevenlabs_voice_id: str | None
     primary_ref_image_key: str | None
     created_at: datetime
     assets: list[AssetOut]

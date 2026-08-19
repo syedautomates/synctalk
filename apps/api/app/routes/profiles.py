@@ -13,7 +13,8 @@ from app.schemas.upload import (
     PresignRequest,
     PresignResponse,
 )
-from app.services import media_validation
+from app.schemas.voice import CreateVoiceRequest
+from app.services import elevenlabs_client, media_validation
 from app.services.frame_extraction import extract_and_store_frames
 from app.services.storage import build_object_key, get_object_bytes, object_exists, presign_put
 
@@ -65,6 +66,7 @@ def _to_profile_out(profile: AvatarProfile, db: Session) -> ProfileOut:
         name=profile.name,
         status=profile.status,
         consent_confirmed_at=profile.consent_confirmed_at,
+        elevenlabs_voice_id=profile.elevenlabs_voice_id,
         primary_ref_image_key=profile.primary_ref_image_key,
         created_at=profile.created_at,
         assets=[AssetOut.model_validate(a) for a in assets],
@@ -164,4 +166,75 @@ def create_asset(
             profile.primary_ref_image_key = best_key
         db.commit()
 
+    return _to_profile_out(profile, db)
+
+
+def _latest_passed_asset(db: Session, profile_id: UUID, kind: str) -> MediaAsset | None:
+    return (
+        db.query(MediaAsset)
+        .filter(
+            MediaAsset.profile_id == profile_id,
+            MediaAsset.kind == kind,
+            MediaAsset.validation == "passed",
+        )
+        .order_by(MediaAsset.created_at.desc())
+        .first()
+    )
+
+
+@router.post("/{profile_id}/voice", response_model=ProfileOut)
+def create_voice(
+    profile_id: UUID, payload: CreateVoiceRequest, user: CurrentUser, db: DbSession
+) -> ProfileOut:
+    profile = _get_owned_profile(profile_id, user, db)
+
+    if profile.consent_confirmed_at is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Consent must be confirmed before creating a voice clone.",
+        )
+
+    if payload.use_reference_video:
+        video_asset = _latest_passed_asset(db, profile_id, "reference_video")
+        if video_asset is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No passing reference video found to extract audio from.",
+            )
+        audio_bytes = elevenlabs_client.extract_audio_from_video(
+            get_object_bytes(video_asset.s3_key)
+        )
+        filename = "reference_video_audio.mp3"
+    else:
+        if payload.source_asset_id is not None:
+            voice_asset = db.get(MediaAsset, payload.source_asset_id)
+            if (
+                voice_asset is None
+                or voice_asset.profile_id != profile_id
+                or voice_asset.kind != "voice_sample"
+                or voice_asset.validation != "passed"
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="No passing voice_sample asset found with that ID on this profile.",
+                )
+        else:
+            voice_asset = _latest_passed_asset(db, profile_id, "voice_sample")
+        if voice_asset is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "No passing voice sample found. Upload one, "
+                    "or retry with use_reference_video=true."
+                ),
+            )
+        audio_bytes = get_object_bytes(voice_asset.s3_key)
+        filename = voice_asset.s3_key.rsplit("/", 1)[-1]
+
+    voice_id = elevenlabs_client.create_instant_voice_clone(
+        name=f"{profile.name} ({profile.id})", audio_bytes=audio_bytes, filename=filename
+    )
+    profile.elevenlabs_voice_id = voice_id
+    db.commit()
+    db.refresh(profile)
     return _to_profile_out(profile, db)

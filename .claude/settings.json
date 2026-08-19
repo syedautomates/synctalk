@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(source /tmp/fixture_env.sh)",
+      "Bash(cd \"C:/Users/Syed Wasif Shah/Desktop/Reelo/apps/api\" && py -m ruff check . 2>&1)"
+    ]
+  }
+}
