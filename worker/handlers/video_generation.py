@@ -7,10 +7,10 @@ flash-attn builds...) are heavy and would conflict with look_generation.py's
 diffusers env if shared. This also matches claude.md's literal instruction to
 "invoke exactly as the repo's scripts do" and "parse the process's segment logs".
 
-Command shapes verified against the live repos at M5 build time — see DECISIONS.md.
-The LongCat branch is written to the verified README command shape but was NOT
-live-tested (budget-scoped bake-off decision, see DECISIONS.md's M5 entry).
+Command shapes verified against the live repos at M5 build time (LiveAvatar) and the
+M7 bake-off (LongCat) — see DECISIONS.md.
 """
+import json
 import os
 import subprocess
 import tempfile
@@ -22,6 +22,19 @@ import requests
 VIDEO_MODEL = os.environ.get("VIDEO_MODEL", "liveavatar")
 LIVEAVATAR_DIR = os.environ.get("LIVEAVATAR_DIR", "/root/LiveAvatar")
 LONGCAT_DIR = os.environ.get("LONGCAT_DIR", "/root/LongCat-Video")
+# checkpoint_dir passed to LongCat's script; its own code assumes this and its sibling
+# `../LongCat-Video` directory both live under one shared weights root (verified from
+# source at M7 bake-off time, not documented in the README) -- see setup.sh.
+LONGCAT_WEIGHTS_DIR = os.environ.get(
+    "LONGCAT_WEIGHTS_DIR", "/root/longcat_weights/LongCat-Video-Avatar-1.5"
+)
+# 93 frames/segment at 25fps (v1.5's hardcoded constants, not CLI-configurable --
+# verified from source) = ~3.7s of video per segment; num_segments controls total
+# output length via continuation. Kept low by default -- see DECISIONS.md's M7
+# bake-off entry for why a full 60s+ clip wasn't used (sequential segments on a
+# 2-GPU budget, not LiveAvatar's arbitrary-length single pass).
+LONGCAT_NUM_SEGMENTS = int(os.environ.get("LONGCAT_NUM_SEGMENTS", "3"))
+LONGCAT_RESOLUTION = os.environ.get("LONGCAT_RESOLUTION", "480p")
 LIVEAVATAR_ENABLE_COMPILE = os.environ.get("LIVEAVATAR_ENABLE_COMPILE", "false")
 # Default false, not the reference script's implicit "true" — verified live at M5
 # build time: --fp8 needs Hopper-class native FP8 tensor cores (H800/H200) and fails
@@ -159,13 +172,71 @@ def _run_liveavatar(payload: dict, ctx, work_dir: Path) -> Path:
 
 
 def _run_longcat(payload: dict, ctx, work_dir: Path) -> Path:
-    raise NotImplementedError(
-        "LongCat fallback is written to the verified README command shape "
-        "(run_demo_avatar_single_audio_to_video.py --model_type avatar-v1.5 "
-        "--use_distill --use_int8) but was not live-tested — its documented avatar "
-        "example requires --context_parallel_size=2 (2 GPUs), which the M5 budget "
-        "couldn't cover alongside LiveAvatar. See DECISIONS.md's M5 bake-off entry."
+    image_path = work_dir / "reference.png"
+    audio_path = work_dir / "audio.mp3"
+    _download_to(payload["look_image_url"], image_path)
+    _download_to(payload["audio_url"], audio_path)
+
+    # Input is a JSON file referencing local paths, not CLI flags for prompt/image/audio
+    # directly -- verified from the real example JSONs in the repo's assets/avatar/.
+    input_json_path = work_dir / "input.json"
+    input_json_path.write_text(
+        json.dumps(
+            {
+                "prompt": payload["style_prompt"],
+                "cond_image": str(image_path),
+                "cond_audio": {"person1": str(audio_path)},
+            }
+        )
     )
+
+    output_dir = work_dir / "outputs_avatar_single"
+    torchrun_bin = f"{LONGCAT_DIR}/.venv/bin/torchrun"
+
+    cmd = [
+        torchrun_bin,
+        "--nproc_per_node=2",
+        "run_demo_avatar_single_audio_to_video.py",
+        "--context_parallel_size=2",
+        f"--checkpoint_dir={LONGCAT_WEIGHTS_DIR}",
+        # ai2v (audio+image-to-video, the script's own default) conditions on
+        # cond_image for identity -- at2v (audio+text-to-video) generates a novel
+        # person from the text prompt alone and ignores cond_image entirely. Found
+        # live at the M7 bake-off: an initial at2v run produced a completely different
+        # person (clean-shaven, glasses, suit, unrelated branded background) despite a
+        # correct cond_image path in input.json, because at2v never looks at it.
+        "--stage_1=ai2v",
+        f"--input_json={input_json_path}",
+        "--use_distill",
+        "--model_type",
+        "avatar-v1.5",
+        "--use_int8",
+        "--num_segments",
+        str(LONGCAT_NUM_SEGMENTS),
+        "--resolution",
+        LONGCAT_RESOLUTION,
+        f"--output_dir={output_dir}",
+    ]
+    env = os.environ.copy()
+    env["NCCL_DEBUG"] = "WARN"
+
+    _stream_subprocess(cmd, cwd=LONGCAT_DIR, ctx=ctx, heartbeat_progress=50, env=env)
+
+    # video_continue_{N}.mp4 files are CUMULATIVE (each contains everything up to that
+    # segment) -- verified from source, not the README -- so the highest segment index
+    # is the full-length final output. A single-segment run instead produces
+    # `{stage}_demo_1.mp4` with no continuation files at all.
+    continuations = list(output_dir.glob("video_continue_*.mp4"))
+    if continuations:
+        output_path = max(continuations, key=lambda p: int(p.stem.rsplit("_", 1)[-1]))
+    else:
+        demo_candidates = sorted(output_dir.glob("*_demo_1.mp4"))
+        if not demo_candidates:
+            raise RuntimeError(
+                f"LongCat finished but produced no expected output file in {output_dir}"
+            )
+        output_path = demo_candidates[0]
+    return output_path
 
 
 def run(job: dict, ctx) -> dict:
